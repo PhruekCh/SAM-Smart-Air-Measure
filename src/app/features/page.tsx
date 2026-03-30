@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 
-/* ─── AQI standard categories based on US EPA PM2.5 breakpoints ─── */
+/* ─── AQI standard categories (US EPA) ─── */
 interface AqiLevel {
   label: string;
   color: string;
@@ -14,37 +14,16 @@ interface AqiLevel {
 }
 
 const AQI_LEVELS: AqiLevel[] = [
-  { label: "Good",                  color: "#16a34a", bg: "rgba(22,163,74,0.12)",   min: 0,   max: 50,  advice: "Air quality is satisfactory. Enjoy outdoor activities." },
-  { label: "Moderate",              color: "#ca8a04", bg: "rgba(202,138,4,0.12)",    min: 51,  max: 100, advice: "Acceptable quality. Unusually sensitive people should limit outdoor exertion." },
-  { label: "Unhealthy for Sensitive", color: "#ea580c", bg: "rgba(234,88,12,0.12)", min: 101, max: 150, advice: "Sensitive groups may experience health effects. General public less likely affected." },
-  { label: "Unhealthy",             color: "#dc2626", bg: "rgba(220,38,38,0.12)",    min: 151, max: 200, advice: "Everyone may begin to experience health effects. Sensitive groups more seriously." },
-  { label: "Very Unhealthy",        color: "#7c3aed", bg: "rgba(124,58,237,0.12)",   min: 201, max: 300, advice: "Health alert: everyone may experience serious health effects." },
-  { label: "Hazardous",             color: "#991b1b", bg: "rgba(153,27,27,0.18)",    min: 301, max: 500, advice: "Health warning of emergency conditions. Entire population is likely to be affected." },
+  { label: "Good",                    color: "#16a34a", bg: "rgba(22,163,74,0.12)",   min: 0,   max: 50,  advice: "Air quality is satisfactory. Enjoy outdoor activities." },
+  { label: "Moderate",                color: "#ca8a04", bg: "rgba(202,138,4,0.12)",   min: 51,  max: 100, advice: "Acceptable quality. Unusually sensitive people should limit outdoor exertion." },
+  { label: "Unhealthy for Sensitive", color: "#ea580c", bg: "rgba(234,88,12,0.12)",   min: 101, max: 150, advice: "Sensitive groups may experience health effects. General public less likely affected." },
+  { label: "Unhealthy",               color: "#dc2626", bg: "rgba(220,38,38,0.12)",   min: 151, max: 200, advice: "Everyone may begin to experience health effects. Sensitive groups more seriously." },
+  { label: "Very Unhealthy",          color: "#7c3aed", bg: "rgba(124,58,237,0.12)",  min: 201, max: 300, advice: "Health alert: everyone may experience serious health effects." },
+  { label: "Hazardous",               color: "#991b1b", bg: "rgba(153,27,27,0.18)",   min: 301, max: 500, advice: "Health warning of emergency conditions. Entire population is likely to be affected." },
 ];
 
 function getAqiLevel(aqi: number): AqiLevel {
   return AQI_LEVELS.find((l) => aqi >= l.min && aqi <= l.max) || AQI_LEVELS[AQI_LEVELS.length - 1];
-}
-
-/* ─── Estimate AQI from weather parameters (heuristic) ─── */
-function estimateAqi(station: any): number {
-  const obs = station.Observation;
-  const humidity = parseFloat(obs.RelativeHumidity) || 50;
-  const temp = parseFloat(obs.AirTemperature) || 30;
-  const visibility = parseFloat(obs.LandVisibility) || 10;
-  const windSpeed = parseFloat(obs.WindSpeed) || 0;
-
-  // Low visibility → higher pollution estimate
-  let visScore = Math.max(0, (10 - visibility) * 15);
-  // High humidity + high temp → worse air quality (tropical haze)
-  let humidityTempScore = (humidity > 75 && temp > 30) ? 20 : (humidity > 60 ? 10 : 0);
-  // Low wind → pollutants don't disperse
-  let windPenalty = windSpeed < 2 ? 15 : (windSpeed < 5 ? 8 : 0);
-  // High temperature contributes to ozone
-  let tempScore = temp > 35 ? 20 : (temp > 32 ? 10 : 0);
-
-  let estimatedAqi = Math.round(25 + visScore + humidityTempScore + windPenalty + tempScore);
-  return Math.min(500, Math.max(0, estimatedAqi));
 }
 
 /* ─── Haversine distance in km ─── */
@@ -58,6 +37,27 @@ function haversine(lat1: number, lon1: number, lat2: number, lon2: number): numb
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+/* ─── Types ─── */
+interface AqiData {
+  aqi: number;
+  station: string;
+  stationUrl: string;
+  dominantPol: string;
+  pm25: number | null;
+  pm10: number | null;
+  o3: number | null;
+  no2: number | null;
+  so2: number | null;
+  co: number | null;
+  temperature: number | null;
+  humidity: number | null;
+  pressure: number | null;
+  wind: number | null;
+  updatedAt: string;
+  attributions: { name: string; url: string }[];
+  forecast: { day: string; avg: number; min: number; max: number }[];
+}
+
 interface StationData {
   name: string;
   nameThai: string;
@@ -65,52 +65,22 @@ interface StationData {
   lat: number;
   lon: number;
   distance: number;
-  aqi: number;
   temperature: number;
   humidity: number;
   pressure: number;
   visibility: number;
   windSpeed: number;
   windDirection: string;
-  rainfall: number;
   rainfall24h: number;
   dateTime: string;
 }
 
 export default function FeaturesPage() {
+  const [aqiData, setAqiData] = useState<AqiData | null>(null);
   const [stations, setStations] = useState<StationData[]>([]);
-  const [nearest, setNearest] = useState<StationData | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lon: number; city: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const processData = useCallback((weatherStations: any[], lat: number, lon: number) => {
-    const processed: StationData[] = weatherStations.map((s: any) => {
-      const obs = s.Observation;
-      return {
-        name: s.StationNameEnglish,
-        nameThai: s.StationNameThai,
-        province: s.Province,
-        lat: parseFloat(s.Latitude),
-        lon: parseFloat(s.Longitude),
-        distance: haversine(lat, lon, parseFloat(s.Latitude), parseFloat(s.Longitude)),
-        aqi: estimateAqi(s),
-        temperature: parseFloat(obs.AirTemperature) || 0,
-        humidity: parseFloat(obs.RelativeHumidity) || 0,
-        pressure: parseFloat(obs.MeanSeaLevelPressure) || 0,
-        visibility: parseFloat(obs.LandVisibility) || 0,
-        windSpeed: parseFloat(obs.WindSpeed) || 0,
-        windDirection: typeof obs.WindDirection === 'string' ? obs.WindDirection : '—',
-        rainfall: parseFloat(obs.Rainfall) || 0,
-        rainfall24h: parseFloat(obs.Rainfall24Hr) || 0,
-        dateTime: obs.DateTime,
-      };
-    });
-
-    processed.sort((a, b) => a.distance - b.distance);
-    setStations(processed);
-    setNearest(processed[0] || null);
-  }, []);
 
   useEffect(() => {
     async function load() {
@@ -122,27 +92,76 @@ export default function FeaturesPage() {
         const lon = locData.lon ?? 100.52;
         setUserLocation({ lat, lon, city: locData.city || locData.regionName || "Unknown" });
 
-        // Step 2: get TMD weather data
+        // Step 2: get real AQI from AQICN
+        const aqiRes = await fetch(`/api/aqi?lat=${lat}&lng=${lon}`);
+        const aqiJson = await aqiRes.json();
+
+        if (aqiJson.status === "ok" && aqiJson.data) {
+          const d = aqiJson.data;
+          const iaqi = d.iaqi || {};
+          setAqiData({
+            aqi: d.aqi,
+            station: d.city?.name || "Unknown Station",
+            stationUrl: d.city?.url || "",
+            dominantPol: d.dominentpol || "—",
+            pm25: iaqi.pm25?.v ?? null,
+            pm10: iaqi.pm10?.v ?? null,
+            o3: iaqi.o3?.v ?? null,
+            no2: iaqi.no2?.v ?? null,
+            so2: iaqi.so2?.v ?? null,
+            co: iaqi.co?.v ?? null,
+            temperature: iaqi.t?.v ?? null,
+            humidity: iaqi.h?.v ?? null,
+            pressure: iaqi.p?.v ?? null,
+            wind: iaqi.w?.v ?? null,
+            updatedAt: d.time?.iso || d.time?.s || "—",
+            attributions: d.attributions || [],
+            forecast: d.forecast?.daily?.pm25?.slice(0, 7) || [],
+          });
+        }
+
+        // Step 3: get TMD weather data for station table
         const weatherRes = await fetch("/api/weather");
         const weatherData = await weatherRes.json();
         const weatherStations = weatherData?.Stations?.Station || [];
 
-        processData(weatherStations, lat, lon);
+        const processed: StationData[] = weatherStations.map((s: any) => {
+          const obs = s.Observation;
+          return {
+            name: s.StationNameEnglish,
+            nameThai: s.StationNameThai,
+            province: s.Province,
+            lat: parseFloat(s.Latitude),
+            lon: parseFloat(s.Longitude),
+            distance: haversine(lat, lon, parseFloat(s.Latitude), parseFloat(s.Longitude)),
+            temperature: parseFloat(obs.AirTemperature) || 0,
+            humidity: parseFloat(obs.RelativeHumidity) || 0,
+            pressure: parseFloat(obs.MeanSeaLevelPressure) || 0,
+            visibility: parseFloat(obs.LandVisibility) || 0,
+            windSpeed: parseFloat(obs.WindSpeed) || 0,
+            windDirection: typeof obs.WindDirection === "string" ? obs.WindDirection : "—",
+            rainfall24h: parseFloat(obs.Rainfall24Hr) || 0,
+            dateTime: obs.DateTime,
+          };
+        });
+
+        processed.sort((a, b) => a.distance - b.distance);
+        setStations(processed);
       } catch (e) {
-        setError("Failed to load weather data. Please try again later.");
+        setError("Failed to load data. Please try again later.");
       } finally {
         setLoading(false);
       }
     }
     load();
-  }, [processData]);
+  }, []);
 
   if (loading) {
     return (
-      <div className="container" style={{ paddingTop: '120px', textAlign: 'center', minHeight: '80vh' }}>
+      <div className="container" style={{ paddingTop: "120px", textAlign: "center", minHeight: "80vh" }}>
         <div className="loading-spinner" />
-        <p style={{ marginTop: '1.5rem', color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
-          Detecting your location & loading weather data…
+        <p style={{ marginTop: "1.5rem", color: "var(--text-secondary)", fontSize: "1.1rem" }}>
+          Detecting your location & fetching real-time AQI…
         </p>
       </div>
     );
@@ -150,146 +169,240 @@ export default function FeaturesPage() {
 
   if (error) {
     return (
-      <div className="container" style={{ paddingTop: '120px', textAlign: 'center', minHeight: '80vh' }}>
-        <p style={{ color: 'var(--accent)', fontSize: '1.1rem' }}>{error}</p>
+      <div className="container" style={{ paddingTop: "120px", textAlign: "center", minHeight: "80vh" }}>
+        <p style={{ color: "var(--accent)", fontSize: "1.1rem" }}>{error}</p>
       </div>
     );
   }
 
-  const level = nearest ? getAqiLevel(nearest.aqi) : AQI_LEVELS[0];
+  const aqi = aqiData?.aqi ?? 0;
+  const level = getAqiLevel(aqi);
   const topStations = stations.slice(0, 8);
 
   return (
-    <div className="container" style={{ paddingTop: '100px', paddingBottom: '60px' }}>
+    <div className="container" style={{ paddingTop: "100px", paddingBottom: "60px" }}>
       {/* Page Header */}
-      <section className="fade-in-up" style={{ marginBottom: '3rem' }}>
-        <h1 className="hero-title" style={{ fontSize: 'clamp(2rem, 4vw, 3.5rem)' }}>
+      <section className="fade-in-up" style={{ marginBottom: "3rem" }}>
+        <h1 className="hero-title" style={{ fontSize: "clamp(2rem, 4vw, 3.5rem)" }}>
           Air Quality <span className="text-gradient">Analytics</span>
         </h1>
-        <p className="hero-subtitle" style={{ textAlign: 'left', marginBottom: '0' }}>
-          Real-time estimation based on {stations.length} TMD weather stations across Thailand.
-          {userLocation && <><br />📍 Detected location: <strong>{userLocation.city}</strong> ({userLocation.lat.toFixed(2)}°N, {userLocation.lon.toFixed(2)}°E)</>}
+        <p className="hero-subtitle" style={{ textAlign: "left", marginBottom: "0" }}>
+          Real-time AQI data from <a href="https://aqicn.org/" target="_blank" rel="noopener noreferrer" style={{ color: "var(--primary)", fontWeight: 600 }}>aqicn.org</a> + weather data from TMD.
+          {userLocation && (
+            <>
+              <br />📍 Detected location: <strong>{userLocation.city}</strong> ({userLocation.lat.toFixed(2)}°N, {userLocation.lon.toFixed(2)}°E)
+            </>
+          )}
         </p>
       </section>
 
-      {/* Big AQI Card for nearest station */}
-      {nearest && (
-        <section className="fade-in-up delay-100" style={{ marginBottom: '3rem' }}>
+      {/* Big AQI Card */}
+      {aqiData && (
+        <section className="fade-in-up delay-100" style={{ marginBottom: "3rem" }}>
           <div className="glass-panel" style={{
-            padding: '2.5rem',
-            borderRadius: '24px',
+            padding: "2.5rem",
+            borderRadius: "24px",
             borderLeft: `6px solid ${level.color}`,
             background: level.bg,
           }}>
-            <div className="flex items-center gap-4" style={{ flexWrap: 'wrap' }}>
+            <div className="flex items-center gap-4" style={{ flexWrap: "wrap" }}>
               {/* AQI Circle */}
               <div style={{
-                width: '140px',
-                height: '140px',
-                borderRadius: '50%',
-                background: `conic-gradient(${level.color} ${(nearest.aqi / 500) * 360}deg, var(--border) 0deg)`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
+                width: "140px",
+                height: "140px",
+                borderRadius: "50%",
+                background: `conic-gradient(${level.color} ${(aqi / 500) * 360}deg, var(--border) 0deg)`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
                 flexShrink: 0,
               }}>
                 <div style={{
-                  width: '120px',
-                  height: '120px',
-                  borderRadius: '50%',
-                  background: 'var(--surface)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  backdropFilter: 'blur(10px)',
+                  width: "120px",
+                  height: "120px",
+                  borderRadius: "50%",
+                  background: "var(--surface)",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backdropFilter: "blur(10px)",
                 }}>
-                  <span style={{ fontSize: '2.5rem', fontWeight: 800, color: level.color, lineHeight: 1 }}>
-                    {nearest.aqi}
+                  <span style={{ fontSize: "2.5rem", fontWeight: 800, color: level.color, lineHeight: 1 }}>
+                    {aqi}
                   </span>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
-                    EST. AQI
+                  <span style={{ fontSize: "0.7rem", color: "var(--text-secondary)", fontWeight: 600 }}>
+                    AQI
                   </span>
                 </div>
               </div>
 
-              <div style={{ flex: 1, minWidth: '240px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+              <div style={{ flex: 1, minWidth: "240px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.5rem" }}>
                   <span style={{
-                    padding: '0.25rem 0.75rem',
-                    borderRadius: '999px',
-                    fontSize: '0.85rem',
+                    padding: "0.25rem 0.75rem",
+                    borderRadius: "999px",
+                    fontSize: "0.85rem",
                     fontWeight: 700,
                     color: level.color,
                     background: level.bg,
                     border: `1px solid ${level.color}30`,
                   }}>{level.label}</span>
+                  <span style={{
+                    padding: "0.25rem 0.6rem",
+                    borderRadius: "999px",
+                    fontSize: "0.75rem",
+                    fontWeight: 600,
+                    color: "var(--text-secondary)",
+                    background: "var(--surface)",
+                    border: "1px solid var(--border)",
+                  }}>Dominant: {aqiData.dominantPol.toUpperCase()}</span>
                 </div>
-                <h2 style={{ fontSize: '1.5rem', fontWeight: 700, margin: '0.5rem 0 0.25rem' }}>
-                  {nearest.name}
+                <h2 style={{ fontSize: "1.5rem", fontWeight: 700, margin: "0.5rem 0 0.25rem" }}>
+                  <a href={aqiData.stationUrl} target="_blank" rel="noopener noreferrer" style={{ color: "inherit" }}>
+                    {aqiData.station}
+                  </a>
                 </h2>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', margin: 0 }}>
-                  Nearest station · {nearest.distance.toFixed(1)} km away · Last update: {nearest.dateTime}
+                <p style={{ color: "var(--text-secondary)", fontSize: "0.95rem", margin: 0 }}>
+                  Last update: {new Date(aqiData.updatedAt).toLocaleString()}
                 </p>
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.75rem', lineHeight: 1.6 }}>
+                <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", marginTop: "0.75rem", lineHeight: 1.6 }}>
                   {level.advice}
                 </p>
               </div>
             </div>
 
-            {/* Stats row */}
-            <div className="grid grid-cols-2 md:grid-cols-4" style={{ gap: '1rem', marginTop: '2rem' }}>
-              <StatCard icon="🌡️" label="Temperature" value={`${nearest.temperature}°C`} />
-              <StatCard icon="💧" label="Humidity" value={`${nearest.humidity}%`} />
-              <StatCard icon="🌬️" label="Wind Speed" value={`${nearest.windSpeed} km/h`} />
-              <StatCard icon="👁️" label="Visibility" value={`${nearest.visibility} km`} />
-              <StatCard icon="📊" label="Pressure" value={`${nearest.pressure} hPa`} />
-              <StatCard icon="🌧️" label="Rain (24h)" value={`${nearest.rainfall24h} mm`} />
-              <StatCard icon="🧭" label="Wind Dir" value={`${nearest.windDirection}°`} />
-              <StatCard icon="🌧️" label="Rain (now)" value={`${nearest.rainfall} mm`} />
+            {/* Pollutant readings */}
+            <div className="grid grid-cols-2 md:grid-cols-4" style={{ gap: "1rem", marginTop: "2rem" }}>
+              <StatCard icon="🫁" label="PM2.5" value={aqiData.pm25 !== null ? `${aqiData.pm25}` : "—"} unit="µg/m³" highlight={aqiData.dominantPol === "pm25"} />
+              <StatCard icon="🌫️" label="PM10" value={aqiData.pm10 !== null ? `${aqiData.pm10}` : "—"} unit="µg/m³" highlight={aqiData.dominantPol === "pm10"} />
+              <StatCard icon="🌤️" label="Ozone (O₃)" value={aqiData.o3 !== null ? `${aqiData.o3}` : "—"} unit="ppb" highlight={aqiData.dominantPol === "o3"} />
+              <StatCard icon="🚗" label="NO₂" value={aqiData.no2 !== null ? `${aqiData.no2}` : "—"} unit="ppb" highlight={aqiData.dominantPol === "no2"} />
+              <StatCard icon="🏭" label="SO₂" value={aqiData.so2 !== null ? `${aqiData.so2}` : "—"} unit="ppb" />
+              <StatCard icon="💨" label="CO" value={aqiData.co !== null ? `${aqiData.co}` : "—"} unit="ppm" />
+              <StatCard icon="🌡️" label="Temperature" value={aqiData.temperature !== null ? `${aqiData.temperature}` : "—"} unit="°C" />
+              <StatCard icon="💧" label="Humidity" value={aqiData.humidity !== null ? `${aqiData.humidity}` : "—"} unit="%" />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* PM2.5 Forecast + Nearest Weather Station */}
+      {aqiData && aqiData.forecast.length > 0 && (
+        <section className="fade-in-up delay-200" style={{ marginBottom: "3rem" }}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+            {/* PM2.5 Forecast */}
+            <div>
+              <h2 style={{ fontSize: "1.3rem", fontWeight: 700, marginBottom: "1rem" }}>PM2.5 Forecast (7 days)</h2>
+              <div className="glass-panel" style={{ padding: "1.5rem", borderRadius: "16px", height: "calc(100% - 2.3rem)" }}>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end", height: "180px" }}>
+                  {aqiData.forecast.map((f, i) => {
+                    const maxVal = Math.max(...aqiData.forecast.map((x) => x.max), 1);
+                    const barHeight = (f.avg / maxVal) * 140;
+                    const fl = getAqiLevel(f.avg);
+                    const dayLabel = new Date(f.day + "T00:00:00").toLocaleDateString("en", { weekday: "short", month: "short", day: "numeric" });
+                    return (
+                      <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "0.25rem" }}>
+                        <span style={{ fontSize: "0.7rem", fontWeight: 700, color: fl.color }}>{f.avg}</span>
+                        <div style={{
+                          width: "100%",
+                          maxWidth: "48px",
+                          height: `${barHeight}px`,
+                          borderRadius: "8px 8px 4px 4px",
+                          background: `linear-gradient(to top, ${fl.color}, ${fl.color}aa)`,
+                          transition: "height 0.5s ease",
+                          position: "relative",
+                        }}>
+                          <div style={{
+                            position: "absolute",
+                            bottom: 0, left: 0, right: 0,
+                            height: `${((f.min / maxVal) * 140)}px`,
+                            background: `${fl.color}33`,
+                            borderRadius: "0 0 4px 4px",
+                          }} />
+                        </div>
+                        <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", textAlign: "center", lineHeight: 1.2 }}>{dayLabel}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Nearest TMD Weather Station */}
+            <div>
+              <h2 style={{ fontSize: "1.3rem", fontWeight: 700, marginBottom: "1rem" }}>
+                Nearest Weather Station
+              </h2>
+              {stations.length > 0 ? (
+                <div className="glass-panel" style={{ padding: "1.5rem", borderRadius: "16px", height: "calc(100% - 2.3rem)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1.25rem" }}>
+                    <div style={{
+                      width: "44px", height: "44px", borderRadius: "12px",
+                      background: "rgba(99,102,241,0.1)", display: "flex",
+                      alignItems: "center", justifyContent: "center", fontSize: "1.3rem", flexShrink: 0,
+                    }}>📡</div>
+                    <div>
+                      <h3 style={{ fontWeight: 700, fontSize: "1rem", margin: 0 }}>{stations[0].name}</h3>
+                      <p style={{ margin: 0, fontSize: "0.8rem", color: "var(--text-secondary)" }}>
+                        {stations[0].nameThai} · {stations[0].distance.toFixed(1)} km away
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2" style={{ gap: "0.75rem" }}>
+                    <WeatherItem icon="🌡️" label="Temperature" value={`${stations[0].temperature}°C`} />
+                    <WeatherItem icon="💧" label="Humidity" value={`${stations[0].humidity}%`} />
+                    <WeatherItem icon="🌬️" label="Wind" value={`${stations[0].windSpeed} km/h`} />
+                    <WeatherItem icon="👁️" label="Visibility" value={`${stations[0].visibility} km`} />
+                    <WeatherItem icon="📊" label="Pressure" value={`${stations[0].pressure} hPa`} />
+                    <WeatherItem icon="🌧️" label="Rain (24h)" value={`${stations[0].rainfall24h} mm`} />
+                  </div>
+                  <p style={{ fontSize: "0.7rem", color: "var(--text-secondary)", marginTop: "1rem", marginBottom: 0 }}>
+                    Source: TMD Weather3Hours API · Updated: {stations[0].dateTime}
+                  </p>
+                </div>
+              ) : (
+                <div className="glass-panel" style={{ padding: "2rem", borderRadius: "16px", textAlign: "center", color: "var(--text-secondary)" }}>
+                  Loading weather data…
+                </div>
+              )}
             </div>
           </div>
         </section>
       )}
 
       {/* AQI Scale Legend */}
-      <section className="fade-in-up delay-200" style={{ marginBottom: '3rem' }}>
-        <h2 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '1rem' }}>AQI Scale Reference</h2>
-        <div className="glass-panel" style={{ padding: '1.5rem', borderRadius: '16px' }}>
-          <div style={{ display: 'flex', gap: '2px', borderRadius: '8px', overflow: 'hidden', height: '32px', marginBottom: '1rem' }}>
+      <section className="fade-in-up delay-200" style={{ marginBottom: "3rem" }}>
+        <h2 style={{ fontSize: "1.3rem", fontWeight: 700, marginBottom: "1rem" }}>AQI Scale (US EPA Standard)</h2>
+        <div className="glass-panel" style={{ padding: "1.5rem", borderRadius: "16px" }}>
+          <div style={{ display: "flex", gap: "2px", borderRadius: "8px", overflow: "hidden", height: "32px", marginBottom: "1rem" }}>
             {AQI_LEVELS.map((l) => (
               <div key={l.label} style={{
                 flex: l.max - l.min,
                 background: l.color,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#fff',
-                fontSize: '0.65rem',
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "#fff",
+                fontSize: "0.65rem",
                 fontWeight: 700,
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
+                whiteSpace: "nowrap",
+                overflow: "hidden",
               }}>
                 {l.min}–{l.max}
               </div>
             ))}
           </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
             {AQI_LEVELS.map((l) => (
               <span key={l.label} style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                fontSize: '0.8rem',
-                color: 'var(--text-secondary)',
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "0.4rem",
+                fontSize: "0.8rem",
+                color: "var(--text-secondary)",
               }}>
-                <span style={{
-                  width: '10px',
-                  height: '10px',
-                  borderRadius: '50%',
-                  background: l.color,
-                  display: 'inline-block',
-                }} />
+                <span style={{ width: "10px", height: "10px", borderRadius: "50%", background: l.color, display: "inline-block" }} />
                 {l.label}
               </span>
             ))}
@@ -297,60 +410,65 @@ export default function FeaturesPage() {
         </div>
       </section>
 
-      {/* Nearby stations table */}
-      <section className="fade-in-up delay-300" style={{ marginBottom: '3rem' }}>
-        <h2 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '1rem' }}>Nearest Weather Stations</h2>
-        <div className="glass-panel" style={{ padding: '0', borderRadius: '16px', overflow: 'hidden' }}>
-          <div style={{ overflowX: 'auto' }}>
-            <table className="data-table" id="stations-table">
-              <thead>
-                <tr>
-                  <th>Station</th>
-                  <th>Distance</th>
-                  <th>Est. AQI</th>
-                  <th>Temp</th>
-                  <th>Humidity</th>
-                  <th>Visibility</th>
-                  <th>Wind</th>
-                  <th>Rain 24h</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topStations.map((s, i) => {
-                  const sl = getAqiLevel(s.aqi);
-                  return (
+      {/* TMD Weather Stations Table */}
+      {stations.length > 0 && (
+        <section className="fade-in-up delay-300" style={{ marginBottom: "3rem" }}>
+          <h2 style={{ fontSize: "1.3rem", fontWeight: 700, marginBottom: "1rem" }}>Nearby TMD Weather Stations</h2>
+          <div className="glass-panel" style={{ padding: "0", borderRadius: "16px", overflow: "hidden" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table className="data-table" id="stations-table">
+                <thead>
+                  <tr>
+                    <th>Station</th>
+                    <th>Distance</th>
+                    <th>Temp</th>
+                    <th>Humidity</th>
+                    <th>Visibility</th>
+                    <th>Wind</th>
+                    <th>Rain 24h</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topStations.map((s, i) => (
                     <tr key={i}>
                       <td>
                         <strong>{s.name}</strong>
                         <br />
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{s.nameThai}</span>
+                        <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>{s.nameThai}</span>
                       </td>
                       <td>{s.distance.toFixed(1)} km</td>
-                      <td>
-                        <span style={{
-                          padding: '0.15rem 0.6rem',
-                          borderRadius: '999px',
-                          fontSize: '0.8rem',
-                          fontWeight: 700,
-                          color: sl.color,
-                          background: sl.bg,
-                        }}>{s.aqi}</span>
-                      </td>
                       <td>{s.temperature}°C</td>
                       <td>{s.humidity}%</td>
                       <td>{s.visibility} km</td>
                       <td>{s.windSpeed} km/h</td>
                       <td>{s.rainfall24h} mm</td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
-      <div style={{ textAlign: 'center', marginTop: '2rem' }}>
+      {/* Attribution */}
+      {aqiData && aqiData.attributions.length > 0 && (
+        <section className="fade-in-up delay-300" style={{ marginBottom: "2rem" }}>
+          <div className="glass-panel" style={{ padding: "1.25rem 1.5rem", borderRadius: "12px" }}>
+            <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)", margin: 0 }}>
+              <strong>Data sources:</strong>{" "}
+              {aqiData.attributions.map((a, i) => (
+                <span key={i}>
+                  {i > 0 && " · "}
+                  <a href={a.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--primary)" }}>{a.name}</a>
+                </span>
+              ))}
+            </p>
+          </div>
+        </section>
+      )}
+
+      <div style={{ textAlign: "center", marginTop: "2rem" }}>
         <Link href="/dashboard" className="btn btn-primary" id="btn-go-dashboard">
           Go to Dashboard →
         </Link>
@@ -359,16 +477,42 @@ export default function FeaturesPage() {
   );
 }
 
-function StatCard({ icon, label, value }: { icon: string; label: string; value: string }) {
+function StatCard({ icon, label, value, unit, highlight }: { icon: string; label: string; value: string; unit?: string; highlight?: boolean }) {
   return (
     <div className="glass-panel" style={{
-      padding: '1rem',
-      borderRadius: '12px',
-      textAlign: 'center',
+      padding: "1rem",
+      borderRadius: "12px",
+      textAlign: "center",
+      border: highlight ? "2px solid var(--primary)" : undefined,
+      background: highlight ? "rgba(99,102,241,0.08)" : undefined,
     }}>
-      <div style={{ fontSize: '1.5rem', marginBottom: '0.25rem' }}>{icon}</div>
-      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>{label}</div>
-      <div style={{ fontSize: '1.1rem', fontWeight: 700 }}>{value}</div>
+      <div style={{ fontSize: "1.5rem", marginBottom: "0.25rem" }}>{icon}</div>
+      <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginBottom: "0.25rem" }}>
+        {label} {highlight && <span style={{ color: "var(--primary)", fontWeight: 700 }}>★</span>}
+      </div>
+      <div style={{ fontSize: "1.1rem", fontWeight: 700 }}>
+        {value} {unit && <span style={{ fontSize: "0.7rem", fontWeight: 400, color: "var(--text-secondary)" }}>{unit}</span>}
+      </div>
+    </div>
+  );
+}
+
+function WeatherItem({ icon, label, value }: { icon: string; label: string; value: string }) {
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: "0.6rem",
+      padding: "0.6rem 0.75rem",
+      borderRadius: "10px",
+      background: "var(--surface)",
+      border: "1px solid var(--border)",
+    }}>
+      <span style={{ fontSize: "1.2rem", flexShrink: 0 }}>{icon}</span>
+      <div>
+        <div style={{ fontSize: "0.7rem", color: "var(--text-secondary)", lineHeight: 1 }}>{label}</div>
+        <div style={{ fontSize: "0.95rem", fontWeight: 700, lineHeight: 1.3 }}>{value}</div>
+      </div>
     </div>
   );
 }

@@ -58,7 +58,7 @@ DB_PORT=3306
 DB_USER=root
 DB_PASSWORD=your_password
 DB_NAME=sam
-AQICN_TOKEN=b8a6d8e234e1e18cbcf2a034e24958eca5aab2c3
+AQICN_TOKEN=XXXXXXXXXXXXXXXXXXXX
 ```
 
 > **Note:** If MySQL is not running the API still works — the dashboard will show a "Database Not Connected" status.

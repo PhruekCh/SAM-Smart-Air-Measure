@@ -1,5 +1,6 @@
 import os
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import URL
 from sqlalchemy.exc import SQLAlchemyError
 from dotenv import load_dotenv
 
@@ -15,7 +16,14 @@ _engine = None
 _init_error: str | None = None
 
 try:
-    DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    DATABASE_URL = URL.create(
+        drivername="mysql+pymysql",
+        username=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=int(DB_PORT),
+        database=DB_NAME,
+    )
     _engine = create_engine(
         DATABASE_URL,
         pool_pre_ping=True,

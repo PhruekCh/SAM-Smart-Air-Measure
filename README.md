@@ -1,4 +1,4 @@
-# SAM — Smart Air Measure
+# SAM — Smart Air Measure 67
 
 Real-time air quality monitoring and analytics application. A **Next.js** frontend displays live AQI and weather data fetched through a **FastAPI** backend, which also queries an optional MySQL sensor database.
 

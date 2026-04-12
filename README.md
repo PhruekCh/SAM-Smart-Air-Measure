@@ -1,4 +1,4 @@
-# SAM — Smart Air Measure
+# SAM — Smart Air Measure 67
 
 Real-time air quality monitoring, analytics, and ML-powered PM2.5 AQI prediction. A **Next.js** frontend displays live AQI, weather data, and model predictions fetched through a **FastAPI** backend, which also queries an optional MySQL sensor database.
 
